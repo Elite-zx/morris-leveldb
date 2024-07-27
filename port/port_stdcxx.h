@@ -58,6 +58,7 @@ class LOCKABLE Mutex {
 
   void Lock() EXCLUSIVE_LOCK_FUNCTION() { mu_.lock(); }
   void Unlock() UNLOCK_FUNCTION() { mu_.unlock(); }
+  // 如果没有持有锁，静态分析工具clangd将发出警告或错误
   void AssertHeld() ASSERT_EXCLUSIVE_LOCK() {}
 
  private:
