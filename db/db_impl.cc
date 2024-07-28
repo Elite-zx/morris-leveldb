@@ -1062,23 +1062,31 @@ int64_t DBImpl::TEST_MaxNextLevelOverlappingBytes() {
   return versions_->MaxNextLevelOverlappingBytes();
 }
 
+// 每次写操作都会有一个递增的唯一序列号进行标识
+// 每一个序列号即一个LevelDB的数据快照，快照读时会记录当前数据库的最大操作序列号，
+// 在查询过程中大于该序列号的记录均不会被查询出，查询出的是不大于该序列号的最新数据。
 Status DBImpl::Get(const ReadOptions& options, const Slice& key, std::string* value) {
   Status s;
   MutexLock l(&mutex_);
+  // 生成快照
   SequenceNumber snapshot;
   if (options.snapshot != nullptr) {
     snapshot = static_cast<const SnapshotImpl*>(options.snapshot)->sequence_number();
   } else {
+    // 未提供快照，则自动生成最新数据的快照
     snapshot = versions_->LastSequence();
   }
 
   MemTable* mem = mem_;
   MemTable* imm = imm_;
+  // 获取当前数据库版本
   Version* current = versions_->current();
+  // Increase reference count.
   mem->Ref();
   if (imm != nullptr) imm->Ref();
   current->Ref();
 
+  // 用于记录无效查询文件
   bool have_stat_update = false;
   Version::GetStats stats;
 
@@ -1092,15 +1100,20 @@ Status DBImpl::Get(const ReadOptions& options, const Slice& key, std::string* va
     } else if (imm != nullptr && imm->Get(lkey, value, &s)) {
       // Done
     } else {
+      // 在memtable与immutable table中没有找到目标键
+      // 继续查询磁盘上的sstable
       s = current->Get(options, lkey, value, &stats);
       have_stat_update = true;
     }
     mutex_.Lock();
   }
 
+  // 无效查询次数是否耗尽
+  // 如果耗尽则说明文件冗余，需要合并(compact)
   if (have_stat_update && current->UpdateStats(stats)) {
     MaybeScheduleCompaction();
   }
+  // Drop reference count.  Delete if no more references exist.
   mem->Unref();
   if (imm != nullptr) imm->Unref();
   current->Unref();
@@ -1171,6 +1184,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   if (status.ok() && updates != nullptr) {
     // 通过写前检查
     // 执行写合并， 小写入变大写入
+    // 最后一个被合并的写任务用last_writer表示
     // nullptr batch is for compactions
     WriteBatch* write_batch = BuildBatchGroup(&last_writer);
     WriteBatchInternal::SetSequence(write_batch, last_sequence + 1);
@@ -1211,20 +1225,24 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
     versions_->SetLastSequence(last_sequence);
   }
 
-  // 将已完成的写任务移出队列
+  // 将写合并后已完成的多个写任务移出队列
   while (true) {
     Writer* ready = writers_.front();
     writers_.pop_front();
     if (ready != &w) {
+      // 此时ready表示被队首线程合并的写任务A
+      // 队首线程需要通知负责写任务A完成的线程
       ready->status = status;
       ready->done = true;
       // 通知等待该写任务完成的线程
+      // cv是一个condition_variable
       ready->cv.Signal();
     }
     // last_writer为最后一个被合并写入的写任务
     if (ready == last_writer) break;
   }
 
+  // 唤醒新的队首写任务
   // Notify new head of write queue
   if (!writers_.empty()) {
     writers_.front()->cv.Signal();
@@ -1257,6 +1275,7 @@ WriteBatch* DBImpl::BuildBatchGroup(Writer** last_writer) {
   ++iter;  // Advance past "first"
   for (; iter != writers_.end(); ++iter) {
     Writer* w = *iter;
+    // sync的写任务不能被non-sync的写任务合并
     if (w->sync && !first->sync) {
       // Do not include a sync write into a batch handled by a non-sync write.
       break;
@@ -1278,6 +1297,7 @@ WriteBatch* DBImpl::BuildBatchGroup(Writer** last_writer) {
       }
       WriteBatchInternal::Append(result, w->batch);
     }
+    // 保存最后一个被合并的写任务的地址
     *last_writer = w;
   }
   return result;

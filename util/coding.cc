@@ -52,13 +52,18 @@ void PutVarint32(std::string* dst, uint32_t v) {
   dst->append(buf, ptr - buf);
 }
 
+// dst指向一片内容为0值的内存
 char* EncodeVarint64(char* dst, uint64_t v) {
+  // 一个字节中的7位是表示数据的，最高位表示后续字节是否有效
+  // 因此这里是2^7=128
   static const int B = 128;
   uint8_t* ptr = reinterpret_cast<uint8_t*>(dst);
+  // 对于最后一个字节之前的字节，确保最高位为1
   while (v >= B) {
     *(ptr++) = v | B;
     v >>= 7;
   }
+  // 对最后一个字节赋值为0
   *(ptr++) = static_cast<uint8_t>(v);
   return reinterpret_cast<char*>(ptr);
 }
@@ -83,8 +88,7 @@ int VarintLength(uint64_t v) {
   return len;
 }
 
-const char* GetVarint32PtrFallback(const char* p, const char* limit,
-                                   uint32_t* value) {
+const char* GetVarint32PtrFallback(const char* p, const char* limit, uint32_t* value) {
   uint32_t result = 0;
   for (uint32_t shift = 0; shift <= 28 && p < limit; shift += 7) {
     uint32_t byte = *(reinterpret_cast<const uint8_t*>(p));
@@ -115,6 +119,7 @@ bool GetVarint32(Slice* input, uint32_t* value) {
 
 const char* GetVarint64Ptr(const char* p, const char* limit, uint64_t* value) {
   uint64_t result = 0;
+  // 从低地址开始按字节为遍历
   for (uint32_t shift = 0; shift <= 63 && p < limit; shift += 7) {
     uint64_t byte = *(reinterpret_cast<const uint8_t*>(p));
     p++;
@@ -122,6 +127,7 @@ const char* GetVarint64Ptr(const char* p, const char* limit, uint64_t* value) {
       // More bytes are present
       result |= ((byte & 127) << shift);
     } else {
+      // 最后一个字节
       result |= (byte << shift);
       *value = result;
       return reinterpret_cast<const char*>(p);

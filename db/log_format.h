@@ -15,17 +15,19 @@ enum RecordType {
   // Zero is reserved for preallocated files
   kZeroType = 0,
 
+  // 完整未被拆分的chunk
   kFullType = 1,
 
   // For fragments
-  kFirstType = 2,
-  kMiddleType = 3,
-  kLastType = 4
+  kFirstType = 2,   // 起始段
+  kMiddleType = 3,  // 中间段
+  kLastType = 4     // 结束段
 };
 static const int kMaxRecordType = kLastType;
 
 static const int kBlockSize = 32768;
 
+// 对于一条chunk, 固定的7个字节的header
 // Header is checksum (4 bytes), length (2 bytes), type (1 byte).
 static const int kHeaderSize = 4 + 2 + 1;
 
